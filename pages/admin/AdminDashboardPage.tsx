@@ -1,9 +1,11 @@
+
 import React, { useState, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useProjects } from '../../hooks/useProjects';
 import { Project } from '../../types';
 import { AnimatePresence, motion } from 'framer-motion';
 import ConfirmationModal from '../../components/ConfirmationModal';
+import { supabase } from '../../supabase';
 
 const AdminDashboardPage: React.FC = () => {
   const { logout } = useAuth();
@@ -83,7 +85,7 @@ const AdminDashboardPage: React.FC = () => {
         onClose={() => setIsModalOpen(false)}
         onConfirm={handleConfirmDelete}
         title="Confirm Deletion"
-        message={`Are you sure you want to delete the project "${projectToDelete?.title}"? This action cannot be undone.`}
+        message={`Are you sure you want to delete the project "${projectToDelete?.title}" ? This action cannot be undone.`}
       />
     </div>
   );
@@ -123,8 +125,6 @@ const ManageProjectsList: React.FC<{ projects: Project[], onEdit: (p: Project) =
   )
 };
 
-import { supabase } from '../../supabase';
-
 const UploadProjectForm: React.FC<{
   project: Project | null;
   addProject: (p: Omit<Project, 'id'>) => Promise<void>;
@@ -134,6 +134,13 @@ const UploadProjectForm: React.FC<{
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  // New state for multiple file uploads
+  const [galleryFiles, setGalleryFiles] = useState<File[]>([]);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
+  const [floorPlanFiles, setFloorPlanFiles] = useState<File[]>([]);
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
+
   const [formData, setFormData] = useState({
     title: project?.title || '',
     category: project?.category || ('Residential' as Project['category']),
@@ -168,13 +175,13 @@ const UploadProjectForm: React.FC<{
     return urls.split('\n').map(url => url.trim()).filter(Boolean);
   }
 
-  const uploadImage = async (file: File): Promise<string> => {
+  const uploadFile = async (file: File, folder: string = 'project-images'): Promise<string> => {
     const fileExt = file.name.split('.').pop();
     const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
     const filePath = `${fileName}`;
 
     const { error: uploadError } = await supabase.storage
-      .from('project-images')
+      .from(folder)
       .upload(filePath, file);
 
     if (uploadError) {
@@ -182,7 +189,7 @@ const UploadProjectForm: React.FC<{
     }
 
     const { data } = supabase.storage
-      .from('project-images')
+      .from(folder)
       .getPublicUrl(filePath);
 
     return data.publicUrl;
@@ -194,10 +201,10 @@ const UploadProjectForm: React.FC<{
     setSubmissionError(null);
 
     try {
+      // 1. Upload Cover Image
       let coverImageUrl = formData.coverImage;
-
       if (selectedFile) {
-        coverImageUrl = await uploadImage(selectedFile);
+        coverImageUrl = await uploadFile(selectedFile);
       }
 
       if (!coverImageUrl) {
@@ -205,6 +212,27 @@ const UploadProjectForm: React.FC<{
         setIsSubmitting(false);
         return;
       }
+
+      // 2. Upload Gallery Images
+      const newGalleryUrls = await Promise.all(galleryFiles.map(file => uploadFile(file)));
+      const existingGalleryUrls = processUrls(formData.galleryImages);
+      const allGalleryUrls = [...existingGalleryUrls, ...newGalleryUrls];
+
+      // 3. Upload Videos
+      const newVideoUrls = await Promise.all(videoFiles.map(file => uploadFile(file, 'project-images')));
+      const existingVideoUrls = processUrls(formData.videos);
+      const allVideoUrls = [...existingVideoUrls, ...newVideoUrls];
+
+      // 4. Upload Floor Plans
+      const newFloorPlanUrls = await Promise.all(floorPlanFiles.map(file => uploadFile(file, 'project-images')));
+      const existingFloorPlanUrls = processUrls(formData.floorPlans);
+      const allFloorPlanUrls = [...existingFloorPlanUrls, ...newFloorPlanUrls];
+
+      // 5. Upload PDFs
+      const newPdfUrls = await Promise.all(pdfFiles.map(file => uploadFile(file, 'project-images')));
+      const existingPdfUrls = processUrls(formData.projectPDFs);
+      const allPdfUrls = [...existingPdfUrls, ...newPdfUrls];
+
 
       const projectData = {
         title: formData.title,
@@ -217,10 +245,10 @@ const UploadProjectForm: React.FC<{
         role: formData.role,
         challenges: formData.challenges,
         materials: formData.materials.split(',').map(s => s.trim()).filter(Boolean),
-        galleryImages: processUrls(formData.galleryImages),
-        videos: processUrls(formData.videos),
-        floorPlans: processUrls(formData.floorPlans),
-        projectPDFs: processUrls(formData.projectPDFs),
+        galleryImages: allGalleryUrls,
+        videos: allVideoUrls,
+        floorPlans: allFloorPlanUrls,
+        projectPDFs: allPdfUrls,
         isPublished: formData.isPublished,
       };
 
@@ -270,10 +298,41 @@ const UploadProjectForm: React.FC<{
       <InputField name="materials" label="Materials (comma separated)" value={formData.materials} onChange={handleChange} />
       <TextAreaField name="challenges" label="Challenges & Solutions" value={formData.challenges} onChange={handleChange} />
 
-      <UrlListField name="galleryImages" label="Gallery Image URLs" value={formData.galleryImages} onChange={handleChange} />
-      <UrlListField name="videos" label="Project Video URLs" value={formData.videos} onChange={handleChange} />
-      <UrlListField name="floorPlans" label="Floor Plan Image URLs" value={formData.floorPlans} onChange={handleChange} />
-      <UrlListField name="projectPDFs" label="Project PDF URLs" value={formData.projectPDFs} onChange={handleChange} />
+      <FileUploadField
+        label="Gallery Images"
+        files={galleryFiles}
+        setFiles={setGalleryFiles}
+        accept="image/*"
+        existingUrls={formData.galleryImages}
+        onExistingChange={(val) => setFormData(prev => ({ ...prev, galleryImages: val }))}
+      />
+
+      <FileUploadField
+        label="Project Videos"
+        files={videoFiles}
+        setFiles={setVideoFiles}
+        accept="video/*"
+        existingUrls={formData.videos}
+        onExistingChange={(val) => setFormData(prev => ({ ...prev, videos: val }))}
+      />
+
+      <FileUploadField
+        label="Floor Plans"
+        files={floorPlanFiles}
+        setFiles={setFloorPlanFiles}
+        accept="image/*"
+        existingUrls={formData.floorPlans}
+        onExistingChange={(val) => setFormData(prev => ({ ...prev, floorPlans: val }))}
+      />
+
+      <FileUploadField
+        label="Project PDFs"
+        files={pdfFiles}
+        setFiles={setPdfFiles}
+        accept="application/pdf"
+        existingUrls={formData.projectPDFs}
+        onExistingChange={(val) => setFormData(prev => ({ ...prev, projectPDFs: val }))}
+      />
 
       <div className="flex items-center">
         <input id="isPublished" name="isPublished" type="checkbox" checked={formData.isPublished} onChange={handleChange} className="h-4 w-4 text-accent focus:ring-accent border-gray-300 rounded" />
@@ -308,17 +367,6 @@ const TextAreaField: React.FC<{ name: string, label: string, value: string, onCh
   </div>
 );
 
-const UrlListField: React.FC<{ name: string, label: string, value: string, onChange: any }> = ({ name, label, value, onChange }) => (
-  <div>
-    <TextAreaField name={name} label={label} value={value} onChange={onChange} placeholder="Enter one URL per line..." rows={4} />
-    <div className="flex flex-wrap gap-2 mt-2">
-      {value.split('\n').map(url => url.trim()).filter(Boolean).map((url, i) => (
-        <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-xs bg-card-gray p-1 rounded-md text-accent hover:text-heading truncate max-w-xs">{url}</a>
-      ))}
-    </div>
-  </div>
-);
-
 const SelectField: React.FC<{ name: string, label: string, value: string, onChange: any, options: string[] }> = ({ name, label, value, onChange, options }) => (
   <div>
     <label htmlFor={name} className="block text-sm font-medium text-body mb-1">{label}</label>
@@ -327,5 +375,70 @@ const SelectField: React.FC<{ name: string, label: string, value: string, onChan
     </select>
   </div>
 );
+
+const FileUploadField: React.FC<{
+  label: string;
+  files: File[];
+  setFiles: React.Dispatch<React.SetStateAction<File[]>>;
+  accept: string;
+  existingUrls: string;
+  onExistingChange: (val: string) => void;
+}> = ({ label, files, setFiles, accept, existingUrls, onExistingChange }) => {
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-body mb-1">{label}</label>
+
+      {/* Existing URLs (Hidden or Editable if needed, keeping editable for flexibility) */}
+      <div className="mb-2">
+        <textarea
+          value={existingUrls}
+          onChange={(e) => onExistingChange(e.target.value)}
+          placeholder="Existing URLs (one per line)..."
+          rows={2}
+          className="w-full px-3 py-2 bg-section-gray border border-border-gray rounded-md focus:ring-accent focus:border-accent text-xs"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <input
+          type="file"
+          multiple
+          accept={accept}
+          onChange={handleFileChange}
+          className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-button file:text-white hover:file:bg-button-hover"
+        />
+      </div>
+
+      {/* File Preview List */}
+      {files.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {files.map((file, index) => (
+            <li key={index} className="flex items-center justify-between text-sm bg-card-gray p-2 rounded-md">
+              <span className="truncate max-w-xs">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(index)}
+                className="text-red-500 hover:text-red-700 font-medium"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 export default AdminDashboardPage;
